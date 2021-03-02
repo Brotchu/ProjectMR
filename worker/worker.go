@@ -2,10 +2,13 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
+	"plugin"
 	"strings"
 	"time"
 
@@ -29,6 +32,9 @@ func main() {
 	var RegisterReply string //REGISTERING Worker with Coordinator
 	err = client.Call("Coordinator.RegisterWorker", selfAddress, &RegisterReply)
 	mr.Must(err)
+	//TODO: load plugin
+	mapFunc := loadPlugin(RegisterReply)
+	fmt.Printf("%+v\n", mapFunc)
 
 	//Starting a Goroutine to listen to poll from coordinator
 	go func() {
@@ -39,18 +45,13 @@ func main() {
 		mr.Must(http.Serve(lis, nil))
 	}()
 
-	//FIXME:
-	// request to coordinator
-	// var Mapreply string
-	// err = client.Call("Coordinator.MapJob", selfAddress, &Mapreply)
-	// fmt.Printf("%+v\n", Mapreply)
-	// mr.Must(err)
 	var req = mr.MapRequest{
 		Data:     []mr.KeyValue{},
 		WorkerId: selfAddress,
 	}
 	var reply mr.MapResponse
 	for {
+		reply = mr.MapResponse{}
 		err := client.Call("Coordinator.MapJob", req, &reply)
 		fmt.Printf("reply from procedure %+v\n", reply)
 		if err != nil {
@@ -58,6 +59,16 @@ func main() {
 		}
 		if reply.Status == false {
 			break
+		}
+		//set data empty again
+		req.Data = []mr.KeyValue{}
+		if reply.Input != "" { //do the map job
+			file, err := os.Open(reply.Input)
+			mr.Must(err)
+			content, err := ioutil.ReadAll(file)
+			mr.Must(err)
+			file.Close()
+			req.Data = mapFunc(reply.Input, string(content))
 		}
 		time.Sleep(5 * time.Second)
 	}
@@ -82,4 +93,16 @@ func getLocalAddr() string { //getting ip address of self to send to coordinator
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
 	addrString := strings.Split(localAddr.String(), ":")
 	return addrString[0]
+}
+
+func loadPlugin(pName string) func(string, string) []mr.KeyValue { //Loading map and reduce(TODO:) according to plugin
+	p, err := plugin.Open(pName)
+	if err != nil {
+		log.Fatal("Err: ", err)
+		return nil
+	}
+
+	f, err := p.Lookup("Map") //getting map function from plugin
+	mFunc := f.(func(string, string) []mr.KeyValue)
+	return mFunc
 }

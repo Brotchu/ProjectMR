@@ -6,18 +6,28 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/Brotchu/ProjectMR/mr"
 )
 
+//To sort intermediate
+
+type ByKey []mr.KeyValue
+
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 type Coordinator struct {
 	inputList        []string
 	inputCount       int
 	completedMap     []string
 	intrOut          []mr.KeyValue
-	reduceInput      []string
+	mapStatus        bool
+	reduceInput      []mr.ReduceRecord
 	reduceInputCount int
 	pluginName       string
 	workerMap        map[string]string
@@ -41,7 +51,15 @@ func (c *Coordinator) MapJob(req mr.MapRequest, reply *mr.MapResponse) error {
 	if c.workerMap[req.WorkerId] != "" {
 		c.completedMap = append(c.completedMap, c.workerMap[req.WorkerId])
 	}
-	c.workerMap[req.WorkerId] = ""
+	if c.mapStatus == true {
+		*reply = mr.MapResponse{
+			Status: false,
+			Input:  "",
+		}
+		c.workerMap[req.WorkerId] = ""
+		return nil
+	}
+	// c.workerMap[req.WorkerId] = ""
 	c.intrOut = append(c.intrOut, req.Data...)
 
 	newIn := ""       //give next input file to worker
@@ -50,18 +68,44 @@ func (c *Coordinator) MapJob(req mr.MapRequest, reply *mr.MapResponse) error {
 		newIn = c.inputList[0]
 		c.inputList = c.inputList[1:]
 	}
+	c.workerMap[req.WorkerId] = newIn
 	fmt.Println("checking if completed")
-	fmt.Printf("%+v\n", c)
+	fmt.Printf("%+v\n", c.completedMap)
 	if len(c.completedMap) == c.inputCount {
 		fmt.Printf("completed count : %d and input count %d\n", len(c.completedMap), c.inputCount)
+		c.mapStatus = true //mapStatus, if map phase finished
 		newStatus = false
+
+		//sort intermediate out
+		sort.Sort(ByKey(c.intrOut))
+		// fmt.Printf("SORTED \n %+v\n", c.intrOut)
+
+		//Splitting into chunks for reduce records TODO:
+		c.reduceInput = []mr.ReduceRecord{}
+		iIter := 0
+		for iIter < len(c.intrOut) {
+			jIter := iIter + 1
+			for jIter < len(c.intrOut) && c.intrOut[iIter].Key == c.intrOut[jIter].Key {
+				jIter++
+			}
+			tempValues := []string{}
+			for kIter := iIter; kIter < jIter; kIter++ {
+				tempValues = append(tempValues, c.intrOut[kIter].Value)
+			}
+			c.reduceInput = append(c.reduceInput, mr.ReduceRecord{
+				Key:    c.intrOut[iIter].Key,
+				Values: tempValues,
+			})
+			iIter = jIter
+		}
+		c.reduceInputCount = len(c.reduceInput)
+		fmt.Printf("REDUCE INPUTS COUNT : %d\n", c.reduceInputCount)
+		/////////////////////////////////////////////////
 	}
 	c.Mut.Unlock()
 
-	reply = &mr.MapResponse{
-		Status: newStatus,
-		Input:  newIn,
-	}
+	reply.Input = newIn
+	reply.Status = newStatus
 	fmt.Printf("[REPLY] %+v\n", reply)
 
 	return nil
@@ -81,6 +125,7 @@ func main() {
 		inputCount:   len(inputFiles),
 		completedMap: []string{},
 		intrOut:      []mr.KeyValue{},
+		mapStatus:    false,
 		pluginName:   plName,
 		workerMap:    make(map[string]string),
 		Mut:          &sync.Mutex{},

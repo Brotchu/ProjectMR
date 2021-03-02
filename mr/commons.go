@@ -20,6 +20,11 @@ type MapResponse struct {
 	Input  string
 }
 
+type ReduceRecord struct {
+	Key    string
+	Values []string
+}
+
 func Must(err error) {
 	if err != nil {
 		log.Fatal("[ERR] ", err)
