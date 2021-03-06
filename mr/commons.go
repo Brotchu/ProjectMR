@@ -20,9 +20,25 @@ type MapResponse struct {
 	Input  string
 }
 
+type ReduceRequest struct {
+	Key      string
+	Result   string
+	WorkerId string
+}
+
+type ReduceResponse struct {
+	Status bool
+	Record ReduceRecord
+}
+
 type ReduceRecord struct {
 	Key    string
 	Values []string
+}
+
+type ReduceOut struct {
+	Key string
+	Res string
 }
 
 func Must(err error) {

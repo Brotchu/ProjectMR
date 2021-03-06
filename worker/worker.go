@@ -33,7 +33,7 @@ func main() {
 	err = client.Call("Coordinator.RegisterWorker", selfAddress, &RegisterReply)
 	mr.Must(err)
 	//TODO: load plugin
-	mapFunc := loadPlugin(RegisterReply)
+	mapFunc, reduceFunc := loadPlugin(RegisterReply)
 	fmt.Printf("%+v\n", mapFunc)
 
 	//Starting a Goroutine to listen to poll from coordinator
@@ -72,6 +72,28 @@ func main() {
 		}
 		time.Sleep(5 * time.Second)
 	}
+	reduceReq := mr.ReduceRequest{
+		Key:      "",
+		Result:   "",
+		WorkerId: selfAddress,
+	}
+	var reduceReply mr.ReduceResponse
+	for {
+		reduceReply = mr.ReduceResponse{}
+		err := client.Call("Coordinator.ReduceJob", reduceReq, &reduceReply)
+		if err != nil {
+			fmt.Printf("[Err] : %+v", err)
+			return
+		}
+		if reduceReply.Status == false {
+			break
+		}
+		reduceReq.Key = reduceReply.Record.Key
+		reduceReq.Result = reduceFunc(reduceReply.Record.Key, reduceReply.Record.Values)
+		fmt.Println(reduceReply.Record.Key, reduceFunc(reduceReply.Record.Key, reduceReply.Record.Values))
+		// fmt.Println(reduceReply)
+		// break //FIXME:
+	}
 }
 
 ////////////////////Worker API for poll
@@ -95,14 +117,17 @@ func getLocalAddr() string { //getting ip address of self to send to coordinator
 	return addrString[0]
 }
 
-func loadPlugin(pName string) func(string, string) []mr.KeyValue { //Loading map and reduce(TODO:) according to plugin
+func loadPlugin(pName string) (func(string, string) []mr.KeyValue, func(string, []string) string) { //Loading map and reduce(TODO:) according to plugin
 	p, err := plugin.Open(pName)
 	if err != nil {
 		log.Fatal("Err: ", err)
-		return nil
+		return nil, nil
 	}
 
 	f, err := p.Lookup("Map") //getting map function from plugin
 	mFunc := f.(func(string, string) []mr.KeyValue)
-	return mFunc
+
+	reducef, err := p.Lookup("Reduce")
+	rFunc := reducef.(func(string, []string) string)
+	return mFunc, rFunc
 }
